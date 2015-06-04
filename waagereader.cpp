@@ -10,7 +10,7 @@ using namespace std;
 using byte = unsigned char;
 // timing code adapted from wiringPi
 
-uint64_t freq = 44100; // target read frequency
+uint64_t rate_hz = 44100; // target read frequency
 // minimum pulse width to interpret bit as 1 (25 samples)
 int yeslen_us = 560; 
 int min_controllen_us = 900; // minimum control bit length (40 samples)
@@ -27,9 +27,9 @@ void weight_callback(double weight) {
 	system(buf);
 }
 
-int yes_samples = yeslen_us*freq/1000000;
-int min_control_samples = min_controllen_us*freq/1000000;
-int max_control_samples = max_controllen_us*freq/1000000;
+int yes_samples = yeslen_us*rate_hz/1000000;
+int min_control_samples = min_controllen_us*rate_hz/1000000;
+int max_control_samples = max_controllen_us*rate_hz/1000000;
 
 void busy_wait(timeval* time, timeval* delay) {
 	timeradd(time, delay, time);
@@ -46,25 +46,16 @@ uint64_t micros() {
 	return (uint64_t)tv.tv_sec * 1000000 + (uint64_t)tv.tv_usec;
 }
 
-void receive(int rate_hz, byte* output, int sample_count) {
-	timeval delay = {0, int(1000000.0/rate_hz - 1 + 0.5)};
-	timeval time; gettimeofday(&time, NULL);
-	for(int i=0;i<sample_count;i++) {
-		output[i] = GET_GPIO(18)?255:0;
-		busy_wait(&time, &delay);
-	}
-}
-
 uint64_t tobytes(vector<byte>& bits, int start, int len) {
 	uint64_t out = 0;
 	for(int i = start; i < start + len; i++) {
 		out = (out<<1) + bits.at(i);
-		bits[i] = 2;
+		if(start!=5*8) bits[i] = 2;
 	}
 	return out;
 }
 
-bool parsepacket(vector<byte> bits) {
+bool parsepacket(vector<byte>& bits) {
 	if(bits.size() != 6*8) return false;
 	int imp5k = (int) tobytes(bits, 0, 11);
 	int imp50k = (int) tobytes(bits,13,11);
@@ -78,6 +69,10 @@ bool parsepacket(vector<byte> bits) {
 		case(0x39): statusString = "impedance begin   "; break;
 		case(0x1E): statusString = "impedance complete"; break;
 		case(0x01): statusString = "stop monitoring   "; break;
+		default:
+			char buf[100];
+			snprintf(buf,100, "unknown: 0x%02x  ",status); 
+			statusString = buf;
 	}
 	fprintf(stderr,"%04.1f kg, imp5k=%03d, imp50k=%03d, %s", weight, imp5k, imp50k, statusString.c_str());
 	cerr << "(";
@@ -88,9 +83,10 @@ bool parsepacket(vector<byte> bits) {
 }
 
 
-vector<byte> current_bits;
-bool running = false;
 bool next_pulse(bool high, int length) {
+	static vector<byte> current_bits;
+	static bool running = false;
+
 	if(!high) {
 		if(running && length > yes_samples) {
 			bool valid = parsepacket(current_bits);
@@ -100,10 +96,8 @@ bool next_pulse(bool high, int length) {
 		}
 	} else {
 		if(length > min_control_samples) {
-			if(running) {
-				// parsepacket(current_bits);
+			if(running) // packet not correctly ended
 				current_bits.clear();
-			}
 			running = length < max_control_samples;
 		} else if(running) {
 			current_bits.push_back(length < yes_samples ? 0 : 1);
@@ -111,21 +105,17 @@ bool next_pulse(bool high, int length) {
 	}
 	return false;
 }
-void analyze(byte* cache, int cache_size) {
-	bool state = false;
-	int curval = 0;
-	int length = 0;
-	for(int i=0;i<cache_size;i++) {
-		// ignore flips shorter than ~2 samples
-		curval = int((cache[i]+3*curval)/4); 
-		if((curval>127) != state) {
-			next_pulse(state, length);
-			state = curval > 127;
-			length = 1;
-		} else length++;
-	}
-	
-	if(current_bits.size() > 0) parsepacket(current_bits);
+void analyze(byte val) {
+	static bool state = false;
+	static int curval = 0;
+	static int length = 0;
+	// ignore flips shorter than ~2 samples
+	curval = int((val+3*curval)/4); 
+	if((curval>127) != state) {
+		next_pulse(state, length);
+		state = curval > 127;
+		length = 1;
+	} else length++;
 }
 
 pair<byte*,int> readfile(string name) {
@@ -142,27 +132,29 @@ int main(int argc, char* argv[]) {
 	if(argc>1) {
 		voice = false;
 		auto x = readfile(argv[1]);
-		analyze(x.first,x.second);
+		for(int i=0;i<x.second;i++)
+			analyze(x.first[i]);
 		return 0;
 	}
 	setup_io();
 	INP_GPIO(18);
-	uint32_t cache_size = freq * capture_us / 1000000;
-	byte cache[cache_size];
 
-	fprintf(stderr,"reading %u samples per second (%.1f%%)\n",
-			cache_size,100.0*capture_us/iteration_us);
+	uint32_t iteration_count = rate_hz * capture_us / 1000000;
 
 	// waage has 2.2s initialization signal, 
 	// so capture 0.07s every 1s to detect it
 
+	timeval delay = {0, int(1000000.0/rate_hz - 1 + 0.5)};
+	timeval time; gettimeofday(&time, NULL);
+	int i = 0;
+	uint64_t bef = micros();
 	while(true) {
-		uint64_t bef = micros();
-		receive(freq, cache, cache_size);
-		ssize_t wlen = write(1, cache, cache_size);
-		if(wlen != cache_size) exit(-1);
-		analyze(cache, cache_size);
-		usleep(iteration_us - (micros()-bef));
+		analyze(GET_GPIO(18)?255:0);
+		busy_wait(&time, &delay);
+		if(++i%iteration_count==0) {
+			usleep(iteration_us - (micros()-bef));
+			bef = micros();
+		}
 	}
 }
 
