@@ -5,8 +5,8 @@
 #include <fstream>
 #include <iostream>
 #include <cinttypes>
+#include <sstream>
 using namespace std;
-
 using byte = unsigned char;
 
 uint64_t rate_hz = 43500; // target read frequency
@@ -19,18 +19,19 @@ uint64_t capture_us =    150000;
 
 uint64_t standby_timeout_us = 10*1000*1000; // time since last packet to go to standby mode
 
-bool voice = true;
-bool DEBUG = false;
+bool DEBUG = false, LOG = false;
 
-void say(string s) {
-	if(!voice) {
-		if(DEBUG) fprintf(stderr, "saying '%s'\n",s.c_str());
-		return;
+ofstream say_stream;
+void start_say_server() {
+	int pipes[2]; pipe(pipes);
+	if(fork() == 0) {
+		close(pipes[1]);
+		dup2(pipes[0], STDIN_FILENO);
+		execlp("say", "say", NULL);
+	} else {
+		close(pipes[0]);
+		say_stream.open("/proc/self/fd/"+to_string(pipes[1]));
 	}
-	char buf[300];
-	snprintf(buf,300,"say %s &", s.c_str());
-	int ret = system(buf);
-	if(ret != 0) printf("Error: '%s' returned %d", buf, ret);
 }
 
 int yes_samples = yeslen_us*rate_hz/1000000;
@@ -79,26 +80,29 @@ bool parsepacket(vector<byte>& bits) {
 	if(status == last_status) return true;
 	last_status = status;
 	string statusString = "unknown";
+	if(!say_stream.is_open()) start_say_server();
 	if( s01 && !s02 && !s03) {
 		statusString = "weighing";
-		say("Hello!");
+		say_stream << "Hello";
 	}
 	if(!s01 && !s02 && !s03) {
 		statusString = "finalweight";
-		say("Done");
+		say_stream.precision(1);
+		say_stream << "Your weight is " << fixed << weight;
 	}
 	if(!s01 &&  s02 && !s03) {
 		statusString = "analyzing";
-		say("Analyzing");
+		say_stream << "Analyzing";
 	}
 	if( s01 &&  s02 &&  s03) {
 		statusString = "complete";
-		say("Done 2");
+		say_stream << "Done 2";
 	}
 	if( s01 && !s02 &&  s03) {
 		statusString = "error";
-		say("Error");
+		say_stream << "Error";
 	}
+	say_stream << endl;
 	if(DEBUG) {
 		fprintf(stderr,"%04.1f kg, imp5k=%03d, imp50k=%03d, %11s",
 				weight, imp5k, imp50k, statusString.c_str());
@@ -162,14 +166,15 @@ uint64_t last_found_packet = 0;
 int main(int argc, char* argv[]) {
 	for(int i = 1; i < argc; i++) {
 		if(argv[i][0] != '-') {
-			voice = false;
-			auto x = readfile(argv[1]);
+			say_stream.open("/proc/self/fd/2");
+			auto x = readfile(argv[i]);
 			for(int i=0;i<x.second;i++)
 				analyze(x.first[i]);
 			return 0;
 		} else if(argv[i][1] == 'v') DEBUG = 1;
+		else if(argv[i][1] == 'l') LOG = 1;
 		else {
-			fprintf(stderr, "Usage: %s [-v] [inputfile]\n", argv[0]);
+			fprintf(stderr, "Usage: %s [-v (verbose)] [-l (log to stdout)] [inputfile]\n", argv[0]);
 			return 1;
 		}
 	}
@@ -191,7 +196,7 @@ int main(int argc, char* argv[]) {
 		if(analyze(val)) {
 			last_found_packet = micros();
 		}
-		putchar(val);
+		if(LOG) putchar(val);
 		busy_wait(&time, &delay);
 		if(++i%iteration_count==0) {
 			uint64_t now = micros();
