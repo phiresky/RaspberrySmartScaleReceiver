@@ -4,6 +4,7 @@
 #include <vector>
 #include <fstream>
 #include <iostream>
+#include <cinttypes>
 using namespace std;
 
 using byte = unsigned char;
@@ -18,7 +19,6 @@ uint64_t iteration_us = 1500000;
 uint64_t capture_us =   100000;
 
 bool voice = true;
-bool outputFiltered = false;
 
 void weight_callback(double weight) {
 	if(!voice) return;
@@ -55,25 +55,34 @@ void receive(int rate_hz, byte* output, int sample_count) {
 	}
 }
 
-uint64_t tobytes(vector<byte> bits, int start, int len) {
+uint64_t tobytes(vector<byte>& bits, int start, int len) {
 	uint64_t out = 0;
-	for(int i = start; i < start + len; i++)
+	for(int i = start; i < start + len; i++) {
 		out = (out<<1) + bits.at(i);
+		bits[i] = 2;
+	}
 	return out;
 }
 
 bool parsepacket(vector<byte> bits) {
 	if(bits.size() != 6*8) return false;
-	uint64_t type = tobytes(bits, 0, 3*8+5) << 3;
-	if(type == 0x00100020) {
-		double weight = tobytes(bits, 3*8+4, 12)/10.0;
-		fprintf(stderr,"weight: %.1f", weight);
-		weight_callback(weight);
-	} else {
-		cerr << "unknown message ";
+	int imp5k = (int) tobytes(bits, 0, 11);
+	int imp50k = (int) tobytes(bits,13,11);
+	double weight = tobytes(bits, 29, 11)/10.0;
+	byte status = (byte) tobytes(bits, 5*8, 8);
+	string statusString = "unknown";
+	switch(status) {
+		case(0x0B): statusString = "begin monitoring  "; break;
+		case(0x05): statusString = "settling weight   "; break;
+		case(0x29): statusString = "weighing complete "; break;
+		case(0x39): statusString = "impedance begin   "; break;
+		case(0x1E): statusString = "impedance complete"; break;
+		case(0x01): statusString = "stop monitoring   "; break;
 	}
+	fprintf(stderr,"%04.1f kg, imp5k=%03d, imp50k=%03d, %s", weight, imp5k, imp50k, statusString.c_str());
 	cerr << "(";
-	for(byte c:bits) cerr << (c?'1':'0');
+	int i=0;
+	for(byte c:bits) cerr << (c==2?'_':char(c+'0')) << ((++i%4)?"":" ");
 	cerr << ")\n";
 	return true;
 }
@@ -106,23 +115,11 @@ void analyze(byte* cache, int cache_size) {
 	bool state = false;
 	int curval = 0;
 	int length = 0;
-	int lastPacketStart = 0;
 	for(int i=0;i<cache_size;i++) {
 		// ignore flips shorter than ~2 samples
 		curval = int((cache[i]+3*curval)/4); 
 		if((curval>127) != state) {
-			bool running_before = running;
-			bool received = next_pulse(state, length);
-			if(!running_before && running && outputFiltered) {
-				for(;lastPacketStart < i;lastPacketStart++) {
-					putchar(127);
-				}
-			}
-			if(received && outputFiltered) {
-				for(;lastPacketStart < i - length; lastPacketStart++) {
-					putchar(cache[lastPacketStart]);
-				}
-			}
+			next_pulse(state, length);
 			state = curval > 127;
 			length = 1;
 		} else length++;
@@ -144,7 +141,6 @@ pair<byte*,int> readfile(string name) {
 int main(int argc, char* argv[]) {
 	if(argc>1) {
 		voice = false;
-		outputFiltered = true;
 		auto x = readfile(argv[1]);
 		analyze(x.first,x.second);
 		return 0;
