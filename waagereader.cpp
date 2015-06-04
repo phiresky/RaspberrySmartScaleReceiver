@@ -7,16 +7,18 @@
 #include <cinttypes>
 using namespace std;
 
+#define DEBUG 0
 using byte = unsigned char;
-// timing code adapted from wiringPi
 
-uint64_t rate_hz = 44100; // target read frequency
+uint64_t rate_hz = 43500; // target read frequency
 // minimum pulse width to interpret bit as 1 (25 samples)
 int yeslen_us = 560; 
 int min_controllen_us = 900; // minimum control bit length (40 samples)
 int max_controllen_us = 1800; // maximum control bit length (80 samples)
 uint64_t iteration_us = 1500000;
-uint64_t capture_us =   100000;
+uint64_t capture_us =    150000;
+
+uint64_t standby_timeout_us = 10*1000*1000; // time since last packet to go to standby mode
 
 bool voice = true;
 
@@ -46,34 +48,35 @@ uint64_t micros() {
 	return (uint64_t)tv.tv_sec * 1000000 + (uint64_t)tv.tv_usec;
 }
 
-uint64_t tobytes(vector<byte>& bits, int start, int len) {
+uint64_t tobytes(vector<byte>& bits, int start, int len, bool setdone=true) {
 	uint64_t out = 0;
 	for(int i = start; i < start + len; i++) {
 		out = (out<<1) + bits.at(i);
-		if(start!=5*8) bits[i] = 2;
+		if(setdone) bits[i] = 2;
 	}
 	return out;
 }
 
 bool parsepacket(vector<byte>& bits) {
 	if(bits.size() != 6*8) return false;
+	if(bits[11]!=1||bits[12]!=0) return false;
+
+	byte checksum = byte(tobytes(bits,5*8,8));
+	(void) checksum;
+
+
 	int imp5k = (int) tobytes(bits, 0, 11);
 	int imp50k = (int) tobytes(bits,13,11);
 	double weight = tobytes(bits, 29, 11)/10.0;
-	byte status = (byte) tobytes(bits, 5*8, 8);
-	string statusString = "unknown";
-	switch(status) {
-		case(0x0B): statusString = "begin monitoring  "; break;
-		case(0x05): statusString = "settling weight   "; break;
-		case(0x29): statusString = "weighing complete "; break;
-		case(0x39): statusString = "impedance begin   "; break;
-		case(0x1E): statusString = "impedance complete"; break;
-		case(0x01): statusString = "stop monitoring   "; break;
-		default:
-			char buf[100];
-			snprintf(buf,100, "unknown: 0x%02x  ",status); 
-			statusString = buf;
-	}
+	bool s01 = bits[26];
+	bool s02 = bits[28];
+	bool s03 = bits[25];
+	string statusString = "unknown   ";
+	if( s01 && !s02 && !s03) statusString = "weighing   ";
+	if(!s01 && !s02 && !s03) statusString = "finalweight";
+	if(!s01 &&  s02 && !s03) statusString = "analyzing  ";
+	if( s01 &&  s02 &&  s03) statusString = "complete   ";
+	if( s01 && !s02 &&  s03) statusString = "error      ";
 	fprintf(stderr,"%04.1f kg, imp5k=%03d, imp50k=%03d, %s", weight, imp5k, imp50k, statusString.c_str());
 	cerr << "(";
 	int i=0;
@@ -105,17 +108,19 @@ bool next_pulse(bool high, int length) {
 	}
 	return false;
 }
-void analyze(byte val) {
+bool analyze(byte val) {
 	static bool state = false;
 	static int curval = 0;
 	static int length = 0;
 	// ignore flips shorter than ~2 samples
 	curval = int((val+3*curval)/4); 
+	bool found_packet = false;
 	if((curval>127) != state) {
-		next_pulse(state, length);
+		found_packet = next_pulse(state, length);
 		state = curval > 127;
 		length = 1;
 	} else length++;
+	return found_packet;
 }
 
 pair<byte*,int> readfile(string name) {
@@ -127,6 +132,8 @@ pair<byte*,int> readfile(string name) {
 	is.read((char*)buffer, length);
 	return {buffer,length};
 }
+
+uint64_t last_found_packet = 0;
 
 int main(int argc, char* argv[]) {
 	if(argc>1) {
@@ -140,6 +147,7 @@ int main(int argc, char* argv[]) {
 	INP_GPIO(18);
 
 	uint32_t iteration_count = rate_hz * capture_us / 1000000;
+	fprintf(stderr, "reading %.1f%% of the time\n", 100.0*capture_us/iteration_us);
 
 	// waage has 2.2s initialization signal, 
 	// so capture 0.07s every 1s to detect it
@@ -149,11 +157,21 @@ int main(int argc, char* argv[]) {
 	int i = 0;
 	uint64_t bef = micros();
 	while(true) {
-		analyze(GET_GPIO(18)?255:0);
+		byte val = GET_GPIO(18)?255:0;
+		if(analyze(val)) {
+			last_found_packet = micros();
+		}
+		putchar(val);
 		busy_wait(&time, &delay);
 		if(++i%iteration_count==0) {
-			usleep(iteration_us - (micros()-bef));
-			bef = micros();
+			uint64_t now = micros();
+			if((now-last_found_packet) > standby_timeout_us) {
+				int sleepdur = iteration_us - (now-bef);
+				if(DEBUG) cerr << "iteration complete, sleeping "<<sleepdur<<endl;
+				usleep(sleepdur);
+				gettimeofday(&time, NULL);
+				bef = micros();
+			} else bef = now;
 		}
 	}
 }
