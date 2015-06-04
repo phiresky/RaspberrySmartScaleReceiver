@@ -7,7 +7,6 @@
 #include <cinttypes>
 using namespace std;
 
-#define DEBUG 0
 using byte = unsigned char;
 
 uint64_t rate_hz = 43500; // target read frequency
@@ -21,12 +20,17 @@ uint64_t capture_us =    150000;
 uint64_t standby_timeout_us = 10*1000*1000; // time since last packet to go to standby mode
 
 bool voice = true;
+bool DEBUG = false;
 
-void weight_callback(double weight) {
-	if(!voice) return;
-	char buf[100];
-	snprintf(buf,100,"say %.1f kilogram &", weight);
-	system(buf);
+void say(string s) {
+	if(!voice) {
+		if(DEBUG) fprintf(stderr, "saying '%s'\n",s.c_str());
+		return;
+	}
+	char buf[300];
+	snprintf(buf,300,"say %s &", s.c_str());
+	int ret = system(buf);
+	if(ret != 0) printf("Error: '%s' returned %d", buf, ret);
 }
 
 int yes_samples = yeslen_us*rate_hz/1000000;
@@ -48,14 +52,14 @@ uint64_t micros() {
 	return (uint64_t)tv.tv_sec * 1000000 + (uint64_t)tv.tv_usec;
 }
 
-uint64_t tobytes(vector<byte>& bits, int start, int len, bool setdone=true) {
+uint64_t tobytes(vector<byte>& bits, int start, int len) {
 	uint64_t out = 0;
-	for(int i = start; i < start + len; i++) {
+	for(int i = start; i < start + len; i++)
 		out = (out<<1) + bits.at(i);
-		if(setdone) bits[i] = 2;
-	}
 	return out;
 }
+
+int last_status = -1;
 
 bool parsepacket(vector<byte>& bits) {
 	if(bits.size() != 6*8) return false;
@@ -71,17 +75,37 @@ bool parsepacket(vector<byte>& bits) {
 	bool s01 = bits[26];
 	bool s02 = bits[28];
 	bool s03 = bits[25];
-	string statusString = "unknown   ";
-	if( s01 && !s02 && !s03) statusString = "weighing   ";
-	if(!s01 && !s02 && !s03) statusString = "finalweight";
-	if(!s01 &&  s02 && !s03) statusString = "analyzing  ";
-	if( s01 &&  s02 &&  s03) statusString = "complete   ";
-	if( s01 && !s02 &&  s03) statusString = "error      ";
-	fprintf(stderr,"%04.1f kg, imp5k=%03d, imp50k=%03d, %s", weight, imp5k, imp50k, statusString.c_str());
-	cerr << "(";
-	int i=0;
-	for(byte c:bits) cerr << (c==2?'_':char(c+'0')) << ((++i%4)?"":" ");
-	cerr << ")\n";
+	int status = (s01<<2)|(s02<<1)|(s03);
+	if(status == last_status) return true;
+	last_status = status;
+	string statusString = "unknown";
+	if( s01 && !s02 && !s03) {
+		statusString = "weighing";
+		say("Hello!");
+	}
+	if(!s01 && !s02 && !s03) {
+		statusString = "finalweight";
+		say("Done");
+	}
+	if(!s01 &&  s02 && !s03) {
+		statusString = "analyzing";
+		say("Analyzing");
+	}
+	if( s01 &&  s02 &&  s03) {
+		statusString = "complete";
+		say("Done 2");
+	}
+	if( s01 && !s02 &&  s03) {
+		statusString = "error";
+		say("Error");
+	}
+	if(DEBUG) {
+		fprintf(stderr,"%04.1f kg, imp5k=%03d, imp50k=%03d, %11s",
+				weight, imp5k, imp50k, statusString.c_str());
+		cerr << "(";
+		int i=0; for(byte c:bits) cerr << (c==2?'_':char(c+'0')) << ((++i%4)?"":" ");
+		cerr << ")\n";
+	}
 	return true;
 }
 
@@ -136,12 +160,18 @@ pair<byte*,int> readfile(string name) {
 uint64_t last_found_packet = 0;
 
 int main(int argc, char* argv[]) {
-	if(argc>1) {
-		voice = false;
-		auto x = readfile(argv[1]);
-		for(int i=0;i<x.second;i++)
-			analyze(x.first[i]);
-		return 0;
+	for(int i = 1; i < argc; i++) {
+		if(argv[i][0] != '-') {
+			voice = false;
+			auto x = readfile(argv[1]);
+			for(int i=0;i<x.second;i++)
+				analyze(x.first[i]);
+			return 0;
+		} else if(argv[i][1] == 'v') DEBUG = 1;
+		else {
+			fprintf(stderr, "Usage: %s [-v] [inputfile]\n", argv[0]);
+			return 1;
+		}
 	}
 	setup_io();
 	INP_GPIO(18);
@@ -167,7 +197,7 @@ int main(int argc, char* argv[]) {
 			uint64_t now = micros();
 			if((now-last_found_packet) > standby_timeout_us) {
 				int sleepdur = iteration_us - (now-bef);
-				if(DEBUG) cerr << "iteration complete, sleeping "<<sleepdur<<endl;
+				if(DEBUG) fprintf(stderr, "sleeping %d us\n",sleepdur);
 				usleep(sleepdur);
 				gettimeofday(&time, NULL);
 				bef = micros();
