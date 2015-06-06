@@ -83,12 +83,12 @@ bool parsepacket(vector<byte>& bits) {
 	if(!say_stream.is_open()) start_say_server();
 	if( s01 && !s02 && !s03) {
 		statusString = "weighing";
-		say_stream << "Hello";
+		say_stream << "Hello. Please wait.";
 	}
 	if(!s01 && !s02 && !s03) {
 		statusString = "finalweight";
 		say_stream.precision(1);
-		say_stream << "Your weight is " << fixed << weight;
+		say_stream << "Your weight is " << fixed << weight << " kilogram";
 	}
 	if(!s01 &&  s02 && !s03) {
 		statusString = "analyzing";
@@ -96,7 +96,7 @@ bool parsepacket(vector<byte>& bits) {
 	}
 	if( s01 &&  s02 &&  s03) {
 		statusString = "complete";
-		say_stream << "Done 2";
+		say_stream << "Done. Your body fat percentage is: blablabla. Too lazy to implement the formulas.";
 	}
 	if( s01 && !s02 &&  s03) {
 		statusString = "error";
