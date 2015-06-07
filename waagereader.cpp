@@ -23,7 +23,8 @@ bool DEBUG = false, LOG = false;
 
 ofstream say_stream;
 void start_say_server() {
-	int pipes[2]; pipe(pipes);
+	int pipes[2];
+	if(pipe(pipes) == -1) fprintf(stderr, "Error opening pipe");
 	if(fork() == 0) {
 		close(pipes[1]);
 		dup2(pipes[0], STDIN_FILENO);
