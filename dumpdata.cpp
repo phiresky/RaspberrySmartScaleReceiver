@@ -1,3 +1,6 @@
+// dumps a raw data stream from the GPIO pin of the
+// 433MHz receiver for later analysis / reverse engineering
+
 #include "devmemgpio.h"
 #include <cstdint>
 #include <sys/time.h>
@@ -37,6 +40,7 @@ int main(int argc, char* argv[]) {
 	sigemptyset(&sigIntHandler.sa_mask);
 	sigIntHandler.sa_flags = 0;
 	sigaction(SIGINT, &sigIntHandler, NULL);
+
 	setup_io();
 	INP_GPIO(18);
 

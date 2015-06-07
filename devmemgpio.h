@@ -1,13 +1,4 @@
-//
-//  How to access GPIO registers from C-code on the Raspberry-Pi
-//  Example program
-//  15-January-2012
-//  Dom and Gert
-//  Revised: 15-Feb-2013
-//  Revised: 2015-06-03
- 
- 
-// Access from ARM Running Linux
+// adapted from http://elinux.org/RPi_Low-level_peripherals#C
  
 #define BCM2708_PERI_BASE 0x20000000
 #define GPIO_BASE (BCM2708_PERI_BASE + 0x200000) /* GPIO controller */
