@@ -1,0 +1,37 @@
+#!/bin/bash
+# script to say things using the google speech api
+# caches results into ~/.cache/say/
+ 
+readonly LNG=${LNG:=en}
+readonly URL="http://translate.google.com/translate_tts?tl=${LNG}&q="
+readonly STOCK="${HOME}/.cache/${0##*/}"
+ 
+[ -d "$STOCK/$LNG" ] || {
+	mkdir -p "$STOCK/$LNG" || {
+		echo "error: cannot create speech stock \"$STOCK\""
+		exit
+	}
+}
+ 
+function say {
+	ARGS=${*}
+	TEXT=${ARGS// /+}
+	FILE="$(echo "$TEXT" | md5sum)"
+	FILE=${FILE%% *}
+	FILE="$STOCK/$LNG/$FILE"
+	 
+	[ -f "$FILE" ] ||
+		wget -q -U Mozilla -O "$FILE" "$URL$TEXT"
+	 
+	mpg123 -f 65000 -q "$FILE"
+}
+
+if [ "$#" -eq 0 ]; then
+	while read str; do 
+		say "$str"
+	done
+	exit
+fi
+
+
+say "$@"
