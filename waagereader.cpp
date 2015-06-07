@@ -175,7 +175,7 @@ int main(int argc, char* argv[]) {
 		} else if(argv[i][1] == 'v') DEBUG = 1;
 		else if(argv[i][1] == 'l') LOG = 1;
 		else {
-			fprintf(stderr, "Usage: %s [-v (verbose)] [-l (log to stdout)] [inputfile]\n", argv[0]);
+			fprintf(stderr, "Usage: %s [-v (verbose)] [-l (log raw data to stdout)] [inputfile]\n", argv[0]);
 			return 1;
 		}
 	}
